@@ -1,0 +1,147 @@
+#image: docker:stable
+image: docker:19.03.0
+stages:
+  - verify
+  - package
+  - test
+  - docker_build
+  - deploy_k8s
+variables:
+  KUBECONFIG: /etc/deploy/config
+  MAVEN_CLI_OPTS: "-s ci_settings.xml --batch-mode"
+  # MAVEN_OPTS: "-Dmaven.repo.local=~/.m2/repository"
+  # Configure mysql service (https://hub.docker.com/_/mysql/)
+  MYSQL_DATABASE: root
+  MYSQL_ROOT_PASSWORD: 123456
+  # 目前私有镜像需手动在k8s node节点上手动pull
+  # https://gitlab.com/gitlab-org/gitlab-runner/issues/2673 k8s runner not support by current version 12.8.0
+  # docker login 后 在 ~/.docker/config.json里内容拷出来
+  #DOCKER_AUTH_CONFIG: "{\"auths\":{\"dockerhub.wenqy.com\":{\"auth\":\"Z2l0bGFiOkdpdDahYjEyMzx2Wg==\"},\"https://index.docker.io/v1/\":{\"auth\":\"d2VucXk7dwZjbGs1aDEyMw==\"}},\"HttpHeaders\":{\"User-Agent\":\"Docker-Client/18.03.1-ce (linux)\"}}"
+
+#cache:
+#  paths:
+#    - /opt/cache/.m2/repository
+
+mvn_verify_job:
+  # 自定义一个maven镜像，自建k8s没有PVC，先缓存jar依赖
+  image: dockerhub.wenqy.com/gitlab/maven_deps:3.6.2-jdk-14
+  stage: verify
+  tags:
+    - k8s-runner
+  before_script:
+    - echo "begin verify by checkstyle"
+  script:
+    - mvn $MAVEN_CLI_OPTS checkstyle:check
+  only:
+    refs:
+      - branches
+    variables:
+      - $ENABLE_VERIFY == "true"
+    changes:
+      - "**/*.java"
+
+mvn_build_job:
+  image: dockerhub.wenqy.com/gitlab/maven_deps:3.6.2-jdk-14
+  stage: package
+  #retry: 2
+  services:
+    #自定义注册中心镜像
+    - name: dockerhub.wenqy.com/gitlab/edas-config-center:1.0.0
+    - name: dockerhub.wenqy.com/gitlab/mysql:8.0.19
+  tags:
+    - k8s-runner
+  before_script:
+    - echo "127.0.0.1 jmenv.tbsite.net" >> /etc/hosts
+  script:
+    - mvn $MAVEN_CLI_OPTS package
+    #- cp target/springboot-hsf-test.jar /opt/cache
+  artifacts:
+    #expire_in: 1 week
+    paths:
+      - target/*.jar
+  only:
+    variables:
+      - $ENABLE_PACKAGE == "true" && $CI_COMMIT_MESSAGE =~ /^runTests.*/
+
+# 先不启用，mvn_build_job把打包、单元测试一起做了
+mvn_test_job:
+  image: dockerhub.wenqy.com/gitlab/maven_deps:3.6.2-jdk-14
+  stage: test
+  tags:
+   - k8s-runner
+  before_script:
+    - echo "begin mvn test"
+  script:
+    - mvn $MAVEN_CLI_OPTS test -X
+  only:
+    refs:
+      - branches
+      - tags
+      - merge_requests
+      - schedules
+      - master
+    variables:
+      - $ENABLE_TEST == "true" && $CI_COMMIT_MESSAGE =~ /^runMavenTests.*/
+
+docker_build_job:
+  #image: docker:stable
+  image: docker:19.03.0
+  stage: docker_build
+  variables:
+    DOCKER_DRIVER: overlay2
+    DOCKER_HOST: tcp://localhost:2375
+    # 关闭tls
+    DOCKER_TLS_CERTDIR: ''
+    #CI_DEBUG_TRACE: "true"
+  services:
+    #- name: docker:18.09.7-dind
+    - name: docker:19.03.0-dind
+      entrypoint: ["dockerd-entrypoint.sh"]
+      command: ["--insecure-registry", "dockerhub.wenqy.com"]
+  tags:
+    - k8s-runner
+  before_script:
+    - cat /etc/hosts
+    - echo "192.168.1.106 dockerhub.wenqy.com" >> /etc/hosts
+    #- mkdir /etc/docker
+    #- echo "{\"insecure-registries\":[\"dockerhub.wenqy.com\",\"192.168.1.101:5000\"]}" > /etc/docker/daemon.json
+    #- cat /etc/docker/daemon.json
+    - docker info
+    - docker login -u $REGISTRY_USERNAME -p $REGISTRY_PASSWORD dockerhub.wenqy.com
+  script:
+    #- mkdir target
+    #- cp /opt/cache/springboot-hsf-test.jar target/springboot-hsf-test.jar
+    # 构建镜像并推送到私有仓库
+    - docker build -t dockerhub.wenqy.com/gitlab/springboot-hsf-test:$CI_PIPELINE_ID .
+    - docker push dockerhub.wenqy.com/gitlab/springboot-hsf-test:$CI_PIPELINE_ID
+  # 界面手动触发
+  when: manual
+  only:
+    #refs:
+     # - merge_requests
+      #- master
+    variables:
+      - $ENABLE_BUILD_IMAGE == "true"
+
+deploy_k8s_job:
+  image: dockerhub.wenqy.com/gitlab/kubectl:1.0.0
+  stage: deploy_k8s
+  tags:
+    - k8s-runner
+  before_script:
+    - echo "192.168.1.106 dockerhub.wenqy.com" >> /etc/hosts
+    - mkdir -p /etc/deploy
+    - echo $kube_config |base64 -d > $KUBECONFIG
+  script:
+    - sed -i "s/IMAGE_TAG/$CI_PIPELINE_ID/g" deployment.yaml
+    #- cat deployment.yaml
+    - kubectl apply -f deployment.yaml
+  # 界面手动触发
+  when: manual
+  only:
+    #refs:
+     # - master
+      #- merge_requests
+    variables:
+      - $ENABLE_DEPLOY_K8S == "true"
+    kubernetes: active #条件：k8s环境激活

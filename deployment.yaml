@@ -1,0 +1,57 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: springboot-hsf-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: springboot-hsf-test
+  template:
+    metadata:
+      labels:
+        app: springboot-hsf-test
+    spec:
+      hostAliases: # 设置hosts
+      - ip: "192.168.1.50"
+        hostnames:
+        - "jmenv.tbsite.net"
+      containers:
+      - name: springboot-hsf-test
+        image: dockerhub.wenqy.com/gitlab/springboot-hsf-test:IMAGE_TAG
+        imagePullPolicy: Always
+        resources: #资源管理
+          requests: #容器运行时，最低资源需求，也就是说最少需要多少资源容器才能正常运行
+            cpu: 0.1 #CPU资源（核数），两种方式，浮点数或者是整数+m，0.1=100m，最少值为0.001核（1m）
+            memory: 1024Mi #内存使用量
+          limits: #资源限制
+            cpu: 0.5
+            memory: 2048Mi
+        ports:
+        - containerPort: 18081
+        #env:
+        #- name: jmenv.tbsite.net #注册中心
+          #value: 192.168.1.50
+      nodeSelector:
+        disktype: ssd # lable 指定node节点跑
+      imagePullSecrets: # kubectl拉取镜像需要secrets
+      - name: harbor-secret
+      #Pod 的重启策略有 3 种，默认值为 Always。
+      #Always ： 容器失效时，kubelet 自动重启该容器；
+      #OnFailure ： 容器终止运行且退出码不为0时重启；
+      #Never ： 不论状态为何， kubelet 都不重启该容器。
+      # 只能是Always: spec.template.spec.restartPolicy: Unsupported value: "OnFailure": supported values: Always
+      restartPolicy: Always
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: springboot-hsf-test
+spec:
+  ports:
+  - port: 18081
+    targetPort: 18081
+    name: springboot-hsf-test
+  selector:
+    app: springboot-hsf-test
+  type: ClusterIP

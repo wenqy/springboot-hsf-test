@@ -1,0 +1,40 @@
+spring:
+  output:
+    ansi:
+      enabled: ALWAYS
+  application:
+    name: springboot-hsf-test
+  profiles:
+    active: test
+  hsf:
+    version: 1.0.0
+    timeout: 3000
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    druid:
+#      connection-properties: config.decrypt=true;config.decrypt.key=${public-key}
+      filter:
+        config:
+          enabled: true
+      filters: conn,config,stat,slf4j
+      initial-size: 5
+      max-active: 100
+      min-idle: 5
+      test-on-borrow: false
+      test-on-return: false
+      test-while-idle: true
+server:
+  port: 18081
+#logging:
+#  config: classpath:log4j2.xml
+
+mybatis-plus:
+  mapperLocations: classpath*:/mapper/**/*.xml
+  configuration:
+    mapUnderscoreToCamelCase: true
+    cacheEnabled: true
+  globalConfig:
+    banner: true
+    dbConfig:
+      tableUnderline: true
+  typeHandlersPackage: com.wenqy.hsf.mybatis.typehandler
